@@ -38,3 +38,15 @@ python_functions = ["test_*"]
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.packages.find]
+include = [
+    "bot*",
+    "core*",
+    "data_sources*",
+    "execution*",
+    "feedback*",
+    "infra*",
+    "monitoring*",
+    "patches*",
+]
