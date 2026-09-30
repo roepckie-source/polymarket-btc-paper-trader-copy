@@ -7,6 +7,8 @@ execution depending on the current simulation mode.
 """
 from __future__ import annotations
 
+PAPER_ONLY = True
+
 import asyncio
 import json
 import math
@@ -480,6 +482,9 @@ class IntegratedBTCStrategy(Strategy):
     # ── Redis ─────────────────────────────────────────────────────────────────
 
     async def check_simulation_mode(self) -> bool:
+        if PAPER_ONLY:
+            return True
+
         if not self.redis_client:
             return self.current_simulation_mode
         try:
