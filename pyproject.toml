@@ -18,6 +18,7 @@ dependencies = [
     "pandas>=2.2",
     "requests>=2.32",
     "python-dotenv>=1.0",
+    "loguru>=0.7.0",
     "scikit-learn>=1.6",
     "xgboost>=3.0",
 ]
