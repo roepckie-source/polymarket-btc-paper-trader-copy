@@ -24,6 +24,8 @@ dependencies = [
     "scikit-learn>=1.6",
     "xgboost>=3.0",
     "nautilus_trader>=1.200.0",
+    "py_clob_client>=0.18.0",
+    "py-clob-client-v2>=1.0.0",
 ]
 
 [project.optional-dependencies]
