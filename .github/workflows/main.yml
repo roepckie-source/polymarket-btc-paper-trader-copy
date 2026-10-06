@@ -32,7 +32,7 @@ jobs:
         env:
           POLYMARKET_PK: ""
           POLYMARKET_FUNDER: ""
-          POLYMARKET_SIG_TYPE: ""
+          POLYMARKET_SIG_TYPE: "2"
           POLYMARKET_API_KEY: ""
           POLYMARKET_API_SECRET: ""
           POLYMARKET_PASSPHRASE: ""
