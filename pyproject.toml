@@ -23,6 +23,7 @@ dependencies = [
     "redis>=5.0.0",
     "scikit-learn>=1.6",
     "xgboost>=3.0",
+    "nautilus_trader>=1.200.0",
 ]
 
 [project.optional-dependencies]
