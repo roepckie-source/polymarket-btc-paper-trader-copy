@@ -1,0 +1,26 @@
+name: Polymarket P&L Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pnl-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[testing]"
+
+      - name: Run Polymarket P&L test
+        run: |
+          pytest -q tests/test_performance_tracker_polymarket.py
