@@ -33,7 +33,7 @@ def test_polymarket_no_token_losing_trade():
     )
 
     assert trade.pnl == Decimal("-0.50")
-    assert trade.pnl_pct == Decimal("-0.50")
+    assert trade.pnl_pct == -0.50
 
 
 def test_polymarket_no_token_winning_trade():
@@ -69,9 +69,10 @@ def test_polymarket_no_token_winning_trade():
     ) / Decimal("0.31")
 
     assert abs(trade.pnl - expected_pnl) < Decimal("0.00000001")
+
     assert abs(
-        trade.pnl_pct - Decimal("0.9032258064516129")
-    ) < Decimal("0.00000001")
+        trade.pnl_pct - 0.9032258064516129
+    ) < 0.00000001
 
 
 def test_polymarket_yes_token_winning_trade():
@@ -103,4 +104,4 @@ def test_polymarket_yes_token_winning_trade():
     )
 
     assert trade.pnl == Decimal("0.50")
-    assert trade.pnl_pct == Decimal("0.50")
+    assert trade.pnl_pct == 0.50
