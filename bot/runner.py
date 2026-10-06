@@ -151,24 +151,12 @@ def _build_instrument_config():
         "limit": 100,
     }
 
-    logger.info(
-        "============================================================"
-    )
-    logger.info(
-        "LOADING BTC 5-MIN MARKETS BY SLUG"
-    )
-    logger.info(
-        f"  Count: {len(btc_slugs)}"
-    )
-    logger.info(
-        f"  First: {btc_slugs[0]}"
-    )
-    logger.info(
-        f"  Last: {btc_slugs[-1]}"
-    )
-    logger.info(
-        "============================================================"
-    )
+    logger.info("=" * 60)
+    logger.info("LOADING BTC 5-MIN MARKETS BY SLUG")
+    logger.info(f"  Count: {len(btc_slugs)}")
+    logger.info(f"  First: {btc_slugs[0]}")
+    logger.info(f"  Last: {btc_slugs[-1]}")
+    logger.info("=" * 60)
 
     return InstrumentProviderConfig(
         load_all=True,
@@ -178,11 +166,7 @@ def _build_instrument_config():
 
 
 def _build_polymarket_data_config(instrument_cfg):
-    """
-    Build the Polymarket data client.
-
-    Market-data access is kept separate from execution.
-    """
+    """Build the Polymarket market-data client."""
 
     sig_type = int(
         os.getenv(
@@ -321,18 +305,10 @@ def _build_node(
     if simulation:
 
         logger.info("=" * 80)
-        logger.info(
-            "PAPER-ONLY MODE ACTIVE"
-        )
-        logger.info(
-            "Polymarket execution client: DISABLED"
-        )
-        logger.info(
-            "Private key: NOT REQUIRED"
-        )
-        logger.info(
-            "Real orders: DISABLED"
-        )
+        logger.info("PAPER-ONLY MODE ACTIVE")
+        logger.info("Polymarket execution client: DISABLED")
+        logger.info("Private key: NOT REQUIRED")
+        logger.info("Real orders: DISABLED")
         logger.info("=" * 80)
 
         config = TradingNodeConfig(
@@ -359,12 +335,8 @@ def _build_node(
     else:
 
         logger.warning("=" * 80)
-        logger.warning(
-            "LIVE EXECUTION MODE REQUESTED"
-        )
-        logger.warning(
-            "REAL MONEY MAY BE AT RISK"
-        )
+        logger.warning("LIVE EXECUTION MODE REQUESTED")
+        logger.warning("REAL MONEY MAY BE AT RISK")
         logger.warning("=" * 80)
 
         poly_exec_cfg = _build_polymarket_exec_config(
@@ -377,239 +349,4 @@ def _build_node(
             logging=_nautilus_logging_config(
                 quiet_console=quiet_console
             ),
-            data_engine=LiveDataEngineConfig(
-                qsize=6000
-            ),
-            exec_engine=LiveExecEngineConfig(
-                qsize=6000
-            ),
-            risk_engine=LiveRiskEngineConfig(
-                bypass=False
-            ),
-            data_clients={
-                POLYMARKET: poly_data_cfg
-            },
-            exec_clients={
-                POLYMARKET: poly_exec_cfg
-            },
-        )
-
-    strategy = _create_strategy(
-        redis_client=redis_client,
-        enable_grafana=enable_grafana,
-        test_mode=test_mode,
-        simulation=simulation,
-    )
-
-    node = TradingNode(
-        config=config
-    )
-
-    node.add_data_client_factory(
-        POLYMARKET,
-        PolymarketLiveDataClientFactory,
-    )
-
-    if not simulation:
-
-        node.add_exec_client_factory(
-            POLYMARKET,
-            PolymarketLiveExecClientFactory,
-        )
-
-        logger.warning(
-            "Polymarket execution factory registered."
-        )
-
-    else:
-
-        logger.info(
-            "Paper mode: execution factory NOT registered."
-        )
-
-    node.trader.add_strategy(
-        strategy
-    )
-
-    node.build()
-
-    logger.info(
-        "Nautilus node built successfully"
-    )
-
-    return (
-        node,
-        strategy,
-        redis_client is not None,
-    )
-
-
-def _boot_bot_node(
-    simulation: bool,
-    enable_grafana: bool,
-    test_mode: bool,
-):
-    """Build the Nautilus node for the terminal UI."""
-
-    return _build_node(
-        simulation=simulation,
-        enable_grafana=enable_grafana,
-        test_mode=test_mode,
-        quiet_console=True,
-    )
-
-
-def run_integrated_bot(
-    simulation: bool = False,
-    enable_grafana: bool = True,
-    test_mode: bool = False,
-    enable_tui: bool = True,
-) -> None:
-    """
-    Build and run the integrated BTC 5-minute bot.
-    """
-
-    if not enable_tui:
-
-        print("=" * 80)
-        print(
-            "INTEGRATED POLYMARKET BTC "
-            "5-MIN TRADING BOT"
-        )
-        print(
-            "Nautilus + 7-Phase System + Redis Control"
-        )
-        print("=" * 80)
-
-    if enable_tui:
-
-        from monitoring.terminal_ui import run_bot_session
-
-        try:
-
-            run_bot_session(
-                lambda: _boot_bot_node(
-                    simulation,
-                    enable_grafana,
-                    test_mode,
-                ),
-                simulation=simulation,
-                test_mode=test_mode,
-            )
-
-        except KeyboardInterrupt:
-
-            pass
-
-        finally:
-
-            logger.info("Bot stopped")
-
-        return
-
-    redis_client = init_redis()
-
-    _set_redis_simulation_mode(
-        redis_client,
-        simulation,
-    )
-
-    print()
-    print("Configuration:")
-    print(
-        f"  Initial Mode: "
-        f"{'SIMULATION' if simulation else 'LIVE TRADING'}"
-    )
-    print(
-        f"  Redis Control: "
-        f"{'Enabled' if redis_client else 'Disabled'}"
-    )
-    print(
-        f"  Grafana: "
-        f"{'Enabled' if enable_grafana else 'Disabled'}"
-    )
-    print(
-        f"  Max Trade Size: "
-        f"${os.getenv('MARKET_BUY_USD', '1.00')}"
-    )
-
-    if simulation:
-
-        print(
-            "  Execution: PAPER ONLY"
-        )
-        print(
-            "  Private Key: NOT REQUIRED"
-        )
-        print(
-            "  Real Orders: DISABLED"
-        )
-
-    print()
-
-    print(
-        "Building Nautilus node..."
-    )
-
-    node = None
-
-    try:
-
-        node, strategy, redis_ok = _build_node(
-            simulation=simulation,
-            enable_grafana=enable_grafana,
-            test_mode=test_mode,
-            quiet_console=False,
-        )
-
-        print()
-        print("=" * 80)
-        print("BOT STARTING")
-        print("=" * 80)
-
-        if simulation:
-
-            print(
-                "PAPER TRADING ONLY"
-            )
-            print(
-                "NO REAL ORDERS"
-            )
-            print(
-                "NO PRIVATE KEY"
-            )
-
-        node.run()
-
-    except KeyboardInterrupt:
-
-        print(
-            "\nShutting down..."
-        )
-
-    finally:
-
-        if node is not None:
-
-            try:
-
-                node.dispose()
-
-            except Exception as exc:
-
-                logger.warning(
-                    f"Node dispose warning: {exc}"
-                )
-
-        logger.info(
-            "Bot stopped"
-        )
-
-
-def main() -> None:
-    """Command-line entry point."""
-
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description=
+           
