@@ -23,6 +23,7 @@ def test_polymarket_no_token_losing_trade():
     exit_time = datetime.now(timezone.utc)
 
     trade = tracker.record_trade(
+        trade_id="TEST-NO-LOSS",
         direction="short",
         entry_price=Decimal("0.08"),
         exit_price=Decimal("0.04"),
@@ -54,6 +55,7 @@ def test_polymarket_no_token_winning_trade():
     exit_time = datetime.now(timezone.utc)
 
     trade = tracker.record_trade(
+        trade_id="TEST-NO-WIN",
         direction="short",
         entry_price=Decimal("0.31"),
         exit_price=Decimal("0.59"),
@@ -62,12 +64,14 @@ def test_polymarket_no_token_winning_trade():
         exit_time=exit_time,
     )
 
-    expected_pnl = Decimal("1.00") * (
+    expected_pnl = (
         Decimal("0.59") - Decimal("0.31")
     ) / Decimal("0.31")
 
     assert abs(trade.pnl - expected_pnl) < Decimal("0.00000001")
-    assert abs(trade.pnl_pct - Decimal("0.9032258064516129")) < Decimal("0.00000001")
+    assert abs(
+        trade.pnl_pct - Decimal("0.9032258064516129")
+    ) < Decimal("0.00000001")
 
 
 def test_polymarket_yes_token_winning_trade():
@@ -89,6 +93,7 @@ def test_polymarket_yes_token_winning_trade():
     exit_time = datetime.now(timezone.utc)
 
     trade = tracker.record_trade(
+        trade_id="TEST-YES-WIN",
         direction="long",
         entry_price=Decimal("0.40"),
         exit_price=Decimal("0.60"),
