@@ -1,6 +1,12 @@
 """
 bot.runner — Node construction and top-level ``run_integrated_bot`` entry point.
+
+PAPER-ONLY SAFETY:
+In simulation/test mode, the Polymarket execution client is NOT created.
+This prevents any private-key requirement and guarantees that the paper
+trader cannot initialize a real order execution path.
 """
+
 from __future__ import annotations
 
 import os
@@ -11,6 +17,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from loguru import logger
@@ -22,6 +29,7 @@ from bot.models import generate_btc_market_slugs
 from patches.gamma_markets import apply_gamma_markets_patch, verify_patch
 
 _patch_applied = apply_gamma_markets_patch()
+
 if _patch_applied:
     verify_patch()
 else:
@@ -36,32 +44,29 @@ from nautilus_trader.config import (
     LoggingConfig,
     TradingNodeConfig,
 )
+
 from nautilus_trader.live.node import TradingNode
+
 from nautilus_trader.adapters.polymarket import POLYMARKET
+
 from nautilus_trader.adapters.polymarket import (
     PolymarketDataClientConfig,
     PolymarketExecClientConfig,
 )
+
 from nautilus_trader.adapters.polymarket.factories import (
     PolymarketLiveDataClientFactory,
     PolymarketLiveExecClientFactory,
 )
 
-# The bot now submits BUY market orders via Nautilus's native V2 path
-# (``quote_quantity=True`` + USD amount as quantity). The legacy
-# ``patches.market_orders`` monkey-patch used py_clob_client V1 internally and
-# is no longer applied — see that module's docstring for details.
 from patches.market_orders import apply_market_order_patch
 
-apply_market_order_patch()  # no-op shim, kept for legacy compatibility
+apply_market_order_patch()
 
 
 def _nautilus_logging_config(*, quiet_console: bool) -> LoggingConfig:
-    """Configure Nautilus logging.
+    """Configure Nautilus logging."""
 
-    Nautilus writes directly to stdout/stderr (bypassing loguru). When the TUI
-    is active, suppress console output and keep logs in ``logs/nautilus/`` only.
-    """
     if quiet_console:
         return LoggingConfig(
             log_level="INFO",
@@ -71,6 +76,7 @@ def _nautilus_logging_config(*, quiet_console: bool) -> LoggingConfig:
             print_config=False,
             log_colors=False,
         )
+
     return LoggingConfig(
         log_level="INFO",
         log_directory="./logs/nautilus",
@@ -78,7 +84,8 @@ def _nautilus_logging_config(*, quiet_console: bool) -> LoggingConfig:
 
 
 def init_redis():
-    """Initialise Redis connection for live simulation-mode control."""
+    """Initialise Redis connection for optional simulation control."""
+
     try:
         client = redis.Redis(
             host=os.getenv("REDIS_HOST", "localhost"),
@@ -88,348 +95,375 @@ def init_redis():
             socket_connect_timeout=5,
             socket_keepalive=True,
         )
+
         client.ping()
+
         logger.info("Redis connection established")
+
         return client
+
     except Exception as e:
         logger.warning(f"Redis connection failed: {e}")
         logger.warning("Simulation mode will be static (from .env)")
+
         return None
+
+
+def _set_redis_simulation_mode(redis_client, simulation: bool):
+    """Set Redis simulation flag when Redis is available."""
+
+    if not redis_client:
+        return
+
+    try:
+        mode_value = "1" if simulation else "0"
+        mode_label = "SIMULATION" if simulation else "LIVE"
+
+        redis_client.set(
+            "btc_trading:simulation_mode",
+            mode_value,
+        )
+
+        logger.info(
+            f"Redis simulation_mode forced to: "
+            f"{mode_label} ({mode_value})"
+        )
+
+    except Exception as e:
+        logger.warning(
+            f"Could not set Redis simulation mode: {e}"
+        )
+
+
+def _build_instrument_config():
+    """Build BTC 5-minute market instrument configuration."""
+
+    btc_slugs = generate_btc_market_slugs()
+
+    filters = {
+        "active": True,
+        "closed": False,
+        "archived": False,
+        "slug": tuple(btc_slugs),
+        "limit": 100,
+    }
+
+    logger.info(
+        "Loading BTC 5-min markets by slug"
+    )
+
+    logger.info(
+        f"  First: {btc_slugs[0]} | "
+        f"Count: {len(btc_slugs)}"
+    )
+
+    logger.info(
+        f"  Last: {btc_slugs[-1]}"
+    )
+
+    instrument_cfg = InstrumentProviderConfig(
+        load_all=True,
+        filters=filters,
+        use_gamma_markets=True,
+    )
+
+    return instrument_cfg
+
+
+def _build_polymarket_data_config(instrument_cfg):
+    """
+    Build the Polymarket DATA client.
+
+    Public market data does not require a private key.
+    """
+
+    sig_type = int(
+        os.getenv(
+            "POLYMARKET_SIG_TYPE",
+            "2",
+        )
+    )
+
+    funder = (
+        os.getenv("POLYMARKET_FUNDER") or ""
+    ).strip() or None
+
+    return PolymarketDataClientConfig(
+        private_key=os.getenv("POLYMARKET_PK"),
+        api_key=os.getenv("POLYMARKET_API_KEY"),
+        api_secret=os.getenv("POLYMARKET_API_SECRET"),
+        passphrase=os.getenv("POLYMARKET_PASSPHRASE"),
+        signature_type=sig_type,
+        funder=funder,
+        instrument_provider=instrument_cfg,
+    )
+
+
+def _build_polymarket_exec_config(instrument_cfg):
+    """
+    Build the Polymarket EXECUTION client.
+
+    This function is intentionally isolated so it is only called
+    when live execution is explicitly requested.
+    """
+
+    sig_type = int(
+        os.getenv(
+            "POLYMARKET_SIG_TYPE",
+            "2",
+        )
+    )
+
+    funder = (
+        os.getenv("POLYMARKET_FUNDER") or ""
+    ).strip() or None
+
+    if not os.getenv("POLYMARKET_PK"):
+        raise RuntimeError(
+            "Live execution requires POLYMARKET_PK. "
+            "Paper mode must never call this function."
+        )
+
+    if sig_type in (1, 2) and not funder:
+        raise RuntimeError(
+            "Live execution with signature type 1 or 2 "
+            "requires POLYMARKET_FUNDER."
+        )
+
+    sig_label = {
+        0: "EOA",
+        1: "POLY_PROXY",
+        2: "POLY_GNOSIS_SAFE",
+    }.get(
+        sig_type,
+        "UNKNOWN",
+    )
+
+    logger.info(
+        f"Polymarket LIVE wallet config: "
+        f"signature_type={sig_type} ({sig_label})"
+    )
+
+    logger.info(
+        f"  Funder: {funder}"
+    )
+
+    return PolymarketExecClientConfig(
+        private_key=os.getenv("POLYMARKET_PK"),
+        api_key=os.getenv("POLYMARKET_API_KEY"),
+        api_secret=os.getenv("POLYMARKET_API_SECRET"),
+        passphrase=os.getenv("POLYMARKET_PASSPHRASE"),
+        signature_type=sig_type,
+        funder=funder,
+        instrument_provider=instrument_cfg,
+    )
+
+
+def _create_strategy(
+    redis_client,
+    enable_grafana: bool,
+    test_mode: bool,
+    simulation: bool,
+):
+    """Create the integrated BTC strategy."""
+
+    from bot.strategy import IntegratedBTCStrategy
+
+    strategy = IntegratedBTCStrategy(
+        redis_client=redis_client,
+        enable_grafana=enable_grafana,
+        test_mode=test_mode,
+        simulation=simulation,
+    )
+
+    return strategy
+
+
+def _build_node(
+    *,
+    simulation: bool,
+    enable_grafana: bool,
+    test_mode: bool,
+    quiet_console: bool,
+):
+    """
+    Build the Nautilus node.
+
+    CRITICAL SAFETY RULE:
+
+    simulation=True
+        -> DATA CLIENT only
+        -> NO execution client
+        -> NO private key
+        -> NO wallet
+        -> NO real orders
+
+    simulation=False
+        -> execution client may be created
+        -> explicit credentials required
+    """
+
+    redis_client = init_redis()
+
+    _set_redis_simulation_mode(
+        redis_client,
+        simulation,
+    )
+
+    instrument_cfg = _build_instrument_config()
+
+    poly_data_cfg = _build_polymarket_data_config(
+        instrument_cfg
+    )
+
+    # ------------------------------------------------------------
+    # PAPER MODE
+    # ------------------------------------------------------------
+
+    if simulation:
+
+        logger.info("=" * 80)
+        logger.info(
+            "PAPER-ONLY MODE: "
+            "Polymarket execution client DISABLED"
+        )
+        logger.info(
+            "PAPER-ONLY MODE: "
+            "Private key NOT required"
+        )
+        logger.info(
+            "PAPER-ONLY MODE: "
+            "Real orders DISABLED"
+        )
+        logger.info("=" * 80)
+
+        config = TradingNodeConfig(
+            environment="live",
+            trader_id="BTC-5MIN-INTEGRATED-001",
+            logging=_nautilus_logging_config(
+                quiet_console=quiet_console
+            ),
+            data_engine=LiveDataEngineConfig(
+                qsize=6000
+            ),
+            exec_engine=LiveExecEngineConfig(
+                qsize=6000
+            ),
+            risk_engine=LiveRiskEngineConfig(
+                bypass=True
+            ),
+            data_clients={
+                POLYMARKET: poly_data_cfg
+            },
+            exec_clients={},
+        )
+
+    # ------------------------------------------------------------
+    # LIVE MODE
+    # ------------------------------------------------------------
+
+    else:
+
+        logger.warning("=" * 80)
+        logger.warning(
+            "LIVE EXECUTION MODE REQUESTED"
+        )
+        logger.warning(
+            "REAL MONEY MAY BE AT RISK"
+        )
+        logger.warning("=" * 80)
+
+        poly_exec_cfg = _build_polymarket_exec_config(
+            instrument_cfg
+        )
+
+        config = TradingNodeConfig(
+            environment="live",
+            trader_id="BTC-5MIN-INTEGRATED-001",
+            logging=_nautilus_logging_config(
+                quiet_console=quiet_console
+            ),
+            data_engine=LiveDataEngineConfig(
+                qsize=6000
+            ),
+            exec_engine=LiveExecEngineConfig(
+                qsize=6000
+            ),
+            risk_engine=LiveRiskEngineConfig(
+                bypass=False
+            ),
+            data_clients={
+                POLYMARKET: poly_data_cfg
+            },
+            exec_clients={
+                POLYMARKET: poly_exec_cfg
+            },
+        )
+
+    strategy = _create_strategy(
+        redis_client=redis_client,
+        enable_grafana=enable_grafana,
+        test_mode=test_mode,
+        simulation=simulation,
+    )
+
+    node = TradingNode(
+        config=config
+    )
+
+    # ------------------------------------------------------------
+    # DATA CLIENT
+    # ------------------------------------------------------------
+
+    node.add_data_client_factory(
+        POLYMARKET,
+        PolymarketLiveDataClientFactory,
+    )
+
+    # ------------------------------------------------------------
+    # EXECUTION CLIENT
+    #
+    # IMPORTANT:
+    # Never register the Polymarket execution factory in
+    # simulation mode.
+    # ------------------------------------------------------------
+
+    if not simulation:
+
+        node.add_exec_client_factory(
+            POLYMARKET,
+            PolymarketLiveExecClientFactory,
+        )
+
+        logger.info(
+            "Polymarket execution factory registered"
+        )
+
+    else:
+
+        logger.info(
+            "Paper mode: "
+            "Polymarket execution factory NOT registered"
+        )
+
+    node.trader.add_strategy(
+        strategy
+    )
+
+    node.build()
+
+    logger.info(
+        "Nautilus node built successfully"
+    )
+
+    return (
+        node,
+        strategy,
+        redis_client is not None,
+    )
 
 
 def _boot_bot_node(
     simulation: bool,
     enable_grafana: bool,
-    test_mode: bool,
-):
-    """Build the Nautilus node and strategy. Logs go to the TUI event feed."""
-    redis_client = init_redis()
-
-    if redis_client:
-        try:
-            mode_value = "1" if simulation else "0"
-            redis_client.set("btc_trading:simulation_mode", mode_value)
-            mode_label = "SIMULATION" if simulation else "LIVE"
-            logger.info(f"Redis simulation_mode forced to: {mode_label} ({mode_value})")
-        except Exception as e:
-            logger.warning(f"Could not set Redis simulation mode: {e}")
-
-    btc_slugs = generate_btc_market_slugs()
-
-    filters = {
-        "active": True,
-        "closed": False,
-        "archived": False,
-        "slug": tuple(btc_slugs),
-        "limit": 100,
-    }
-
-    logger.info("Loading BTC 5-min markets by slug")
-    logger.info(f"  First: {btc_slugs[0]} | Count: {len(btc_slugs)}")
-
-    instrument_cfg = InstrumentProviderConfig(
-        load_all=True,
-        filters=filters,
-        use_gamma_markets=True,
-    )
-
-    sig_type = int(os.getenv("POLYMARKET_SIG_TYPE", "2"))
-    funder = (os.getenv("POLYMARKET_FUNDER") or "").strip() or None
-
-    if sig_type == 0 and funder:
-        logger.warning(
-            "POLYMARKET_SIG_TYPE=0 (EOA) but POLYMARKET_FUNDER is set — "
-            "funder will be ignored. Use sig_type=1 or 2 to trade from the proxy."
-        )
-    if sig_type in (1, 2) and not funder:
-        logger.error(
-            "POLYMARKET_SIG_TYPE=%d (proxy) requires POLYMARKET_FUNDER to be set "
-            "to your Polymarket proxy address (visible at polymarket.com → Deposit).",
-            sig_type,
-        )
-
-    sig_label = {0: "EOA", 1: "POLY_PROXY", 2: "POLY_GNOSIS_SAFE"}.get(sig_type, "UNKNOWN")
-    logger.info(f"Polymarket wallet config: signature_type={sig_type} ({sig_label})")
-
-    poly_data_cfg = PolymarketDataClientConfig(
-        private_key=os.getenv("POLYMARKET_PK"),
-        api_key=os.getenv("POLYMARKET_API_KEY"),
-        api_secret=os.getenv("POLYMARKET_API_SECRET"),
-        passphrase=os.getenv("POLYMARKET_PASSPHRASE"),
-        signature_type=sig_type,
-        funder=funder,
-        instrument_provider=instrument_cfg,
-    )
-
-    poly_exec_cfg = PolymarketExecClientConfig(
-        private_key=os.getenv("POLYMARKET_PK"),
-        api_key=os.getenv("POLYMARKET_API_KEY"),
-        api_secret=os.getenv("POLYMARKET_API_SECRET"),
-        passphrase=os.getenv("POLYMARKET_PASSPHRASE"),
-        signature_type=sig_type,
-        funder=funder,
-        instrument_provider=instrument_cfg,
-    )
-
-    config = TradingNodeConfig(
-        environment="live",
-        trader_id="BTC-5MIN-INTEGRATED-001",
-        logging=_nautilus_logging_config(quiet_console=True),
-        data_engine=LiveDataEngineConfig(qsize=6000),
-        exec_engine=LiveExecEngineConfig(qsize=6000),
-        risk_engine=LiveRiskEngineConfig(bypass=simulation),
-        data_clients={POLYMARKET: poly_data_cfg},
-        exec_clients={POLYMARKET: poly_exec_cfg},
-    )
-
-    from bot.strategy import IntegratedBTCStrategy
-
-    strategy = IntegratedBTCStrategy(
-        redis_client=redis_client,
-        enable_grafana=enable_grafana,
-        test_mode=test_mode,
-        simulation=simulation,
-    )
-
-    node = TradingNode(config=config)
-    node.add_data_client_factory(POLYMARKET, PolymarketLiveDataClientFactory)
-    node.add_exec_client_factory(POLYMARKET, PolymarketLiveExecClientFactory)
-    node.trader.add_strategy(strategy)
-    node.build()
-    logger.info("Nautilus node built successfully")
-
-    return node, strategy, redis_client is not None
-
-
-def run_integrated_bot(
-    simulation: bool = False,
-    enable_grafana: bool = True,
-    test_mode: bool = False,
-    enable_tui: bool = True,
-) -> None:
-    """
-    Build and run the integrated BTC 5-min Polymarket trading bot.
-
-    Parameters
-    ----------
-    simulation:
-        When *True* no real orders are placed; trades are paper-logged.
-    enable_grafana:
-        Start the Prometheus metrics exporter thread on port 8000.
-    test_mode:
-        Accelerated simulation (trade every minute, 5-min learning cycle).
-    enable_tui:
-        Show the live Rich terminal dashboard instead of scrolling stderr logs.
-    """
-    if not enable_tui:
-        print("=" * 80)
-        print("INTEGRATED POLYMARKET BTC 5-MIN TRADING BOT")
-        print("Nautilus + 7-Phase System + Redis Control")
-        print("=" * 80)
-
-    if enable_tui:
-        from monitoring.terminal_ui import run_bot_session
-
-        try:
-            run_bot_session(
-                lambda: _boot_bot_node(simulation, enable_grafana, test_mode),
-                simulation=simulation,
-                test_mode=test_mode,
-            )
-        except KeyboardInterrupt:
-            pass
-        finally:
-            logger.info("Bot stopped")
-        return
-
-    redis_client = init_redis()
-
-    if redis_client:
-        try:
-            mode_value = "1" if simulation else "0"
-            redis_client.set("btc_trading:simulation_mode", mode_value)
-            mode_label = "SIMULATION" if simulation else "LIVE"
-            logger.info(f"Redis simulation_mode forced to: {mode_label} ({mode_value})")
-        except Exception as e:
-            logger.warning(f"Could not set Redis simulation mode: {e}")
-
-    if not enable_tui:
-        print(f"\nConfiguration:")
-        print(f"  Initial Mode: {'SIMULATION' if simulation else 'LIVE TRADING'}")
-        print(f"  Redis Control: {'Enabled' if redis_client else 'Disabled'}")
-        print(f"  Grafana: {'Enabled' if enable_grafana else 'Disabled'}")
-        print(f"  Max Trade Size: ${os.getenv('MARKET_BUY_USD', '1.00')}")
-        print()
-
-    btc_slugs = generate_btc_market_slugs()
-
-    filters = {
-        "active": True,
-        "closed": False,
-        "archived": False,
-        "slug": tuple(btc_slugs),
-        "limit": 100,
-    }
-
-    logger.info("=" * 80)
-    logger.info("LOADING BTC 5-MIN MARKETS BY SLUG")
-    logger.info(f"  Count: {len(btc_slugs)}")
-    logger.info(f"  First: {btc_slugs[0]}  Last: {btc_slugs[-1]}")
-    logger.info("=" * 80)
-
-    instrument_cfg = InstrumentProviderConfig(
-        load_all=True,
-        filters=filters,
-        use_gamma_markets=True,
-    )
-
-    # ── Wallet wiring ─────────────────────────────────────────────────
-    # Polymarket signs orders with the EOA private key (POLYMARKET_PK) but
-    # the *funder* (POLYMARKET_FUNDER) is the address that actually holds
-    # the USDC and positions. For MetaMask users that funder is the
-    # Polymarket proxy / Gnosis Safe address shown on the Deposit page,
-    # not the MetaMask address itself.
-    #
-    # signature_type:
-    #   0 = EOA               (rare — USDC sits on the EOA)
-    #   1 = POLY_PROXY        (older MetaMask / browser-wallet accounts)
-    #   2 = POLY_GNOSIS_SAFE  (modern MetaMask / Magic / email accounts)
-    sig_type = int(os.getenv("POLYMARKET_SIG_TYPE", "2"))
-    funder = (os.getenv("POLYMARKET_FUNDER") or "").strip() or None
-
-    if sig_type == 0 and funder:
-        logger.warning(
-            "POLYMARKET_SIG_TYPE=0 (EOA) but POLYMARKET_FUNDER is set — "
-            "funder will be ignored. Use sig_type=1 or 2 to trade from the proxy."
-        )
-    if sig_type in (1, 2) and not funder:
-        logger.error(
-            "POLYMARKET_SIG_TYPE=%d (proxy) requires POLYMARKET_FUNDER to be set "
-            "to your Polymarket proxy address (visible at polymarket.com → Deposit).",
-            sig_type,
-        )
-
-    sig_label = {0: "EOA", 1: "POLY_PROXY", 2: "POLY_GNOSIS_SAFE"}.get(sig_type, "UNKNOWN")
-    logger.info(f"Polymarket wallet config: signature_type={sig_type} ({sig_label})")
-    logger.info(f"  Funder (USDC holder): {funder or '(none — direct EOA)'}")
-
-    poly_data_cfg = PolymarketDataClientConfig(
-        private_key=os.getenv("POLYMARKET_PK"),
-        api_key=os.getenv("POLYMARKET_API_KEY"),
-        api_secret=os.getenv("POLYMARKET_API_SECRET"),
-        passphrase=os.getenv("POLYMARKET_PASSPHRASE"),
-        signature_type=sig_type,
-        funder=funder,
-        instrument_provider=instrument_cfg,
-    )
-
-    poly_exec_cfg = PolymarketExecClientConfig(
-        private_key=os.getenv("POLYMARKET_PK"),
-        api_key=os.getenv("POLYMARKET_API_KEY"),
-        api_secret=os.getenv("POLYMARKET_API_SECRET"),
-        passphrase=os.getenv("POLYMARKET_PASSPHRASE"),
-        signature_type=sig_type,
-        funder=funder,
-        instrument_provider=instrument_cfg,
-    )
-
-    config = TradingNodeConfig(
-        environment="live",
-        trader_id="BTC-5MIN-INTEGRATED-001",
-        logging=_nautilus_logging_config(quiet_console=False),
-        data_engine=LiveDataEngineConfig(qsize=6000),
-        exec_engine=LiveExecEngineConfig(qsize=6000),
-        risk_engine=LiveRiskEngineConfig(bypass=simulation),
-        data_clients={POLYMARKET: poly_data_cfg},
-        exec_clients={POLYMARKET: poly_exec_cfg},
-    )
-
-    from bot.strategy import IntegratedBTCStrategy
-
-    strategy = IntegratedBTCStrategy(
-        redis_client=redis_client,
-        enable_grafana=enable_grafana,
-        test_mode=test_mode,
-        simulation=simulation,
-    )
-
-    print("\nBuilding Nautilus node...")
-    node = TradingNode(config=config)
-    node.add_data_client_factory(POLYMARKET, PolymarketLiveDataClientFactory)
-    node.add_exec_client_factory(POLYMARKET, PolymarketLiveExecClientFactory)
-    node.trader.add_strategy(strategy)
-    node.build()
-    logger.info("Nautilus node built successfully")
-
-    if enable_tui:
-        from monitoring.terminal_ui import run_node_with_dashboard
-
-        logger.info("Bot ready — starting terminal dashboard")
-        try:
-            run_node_with_dashboard(
-                node,
-                strategy,
-                simulation=simulation,
-                test_mode=test_mode,
-                redis_ok=redis_client is not None,
-            )
-        except KeyboardInterrupt:
-            pass
-        finally:
-            logger.info("Bot stopped")
-        return
-
-    print()
-    print("=" * 80)
-    print("BOT STARTING")
-    print("=" * 80)
-
-    try:
-        node.run()
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-    finally:
-        node.dispose()
-        logger.info("Bot stopped")
-
-
-def main() -> None:
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Integrated BTC 5-Min Trading Bot")
-    parser.add_argument(
-        "--live", action="store_true",
-        help="Run in LIVE mode (real money at risk!). Default is simulation.",
-    )
-    parser.add_argument("--no-grafana", action="store_true", help="Disable Grafana metrics")
-    parser.add_argument(
-        "--test-mode", action="store_true",
-        help="Run in TEST MODE (trade every minute for faster testing)",
-    )
-
-    args = parser.parse_args()
-    enable_grafana = not args.no_grafana
-    test_mode = args.test_mode
-    simulation = True if args.test_mode else (not args.live)
-
-    if not simulation:
-        logger.warning("=" * 80)
-        logger.warning("LIVE TRADING MODE — REAL MONEY AT RISK!")
-        logger.warning("=" * 80)
-    else:
-        logger.info("=" * 80)
-        logger.info(
-            f"SIMULATION MODE — {'TEST MODE (fast clock)' if test_mode else 'paper trading only'}"
-        )
-        logger.info("No real orders will be placed.")
-        logger.info("=" * 80)
-
-    run_integrated_bot(
-        simulation=simulation,
-        enable_grafana=enable_grafana,
-        test_mode=test_mode,
-    )
-
-
-if __name__ == "__main__":
-    main()
+    test_mode
