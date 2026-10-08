@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from monitoring.performance_tracker import PerformanceTracker
-from execution.risk_engine import RiskEngine
+from execution.risk_engine import RiskEngine, RiskLimits
 
 
 def test_polymarket_yes_token_profit():
@@ -52,7 +52,9 @@ def test_polymarket_no_token_profit():
     ) / Decimal("0.31")
 
     assert abs(trade.pnl - expected_pnl) < Decimal("0.00000001")
-    assert abs(trade.pnl_pct - 0.9032258064516129) < 0.00000001
+    assert abs(
+        trade.pnl_pct - 0.9032258064516129
+    ) < 0.00000001
 
 
 def test_polymarket_no_token_loss():
@@ -80,19 +82,28 @@ def test_polymarket_no_token_loss():
 
 def test_risk_engine_polymarket_token_pnl():
     """
-    Verify that RiskEngine uses token-price P&L semantics.
+    Verify that RiskEngine uses Polymarket token-price P&L.
 
-    For Polymarket both YES and NO are purchased tokens.
+    Both YES and NO are purchased outcome tokens.
+
     Therefore:
-        P&L = (exit - entry) / entry
+
+        P&L = (exit_price - entry_price)
+               / entry_price * position_size
     """
 
-    risk = RiskEngine(
-        initial_balance=Decimal("100"),
+    limits = RiskLimits(
         max_position_size=Decimal("10"),
         max_total_exposure=Decimal("100"),
-        max_daily_loss=Decimal("25"),
-        max_drawdown=Decimal("0.15"),
+        max_positions=10,
+        max_drawdown_pct=0.15,
+        max_loss_per_day=Decimal("25"),
+        max_leverage=1.0,
+    )
+
+    risk = RiskEngine(
+        limits=limits,
+        account_balance=Decimal("100"),
     )
 
     risk.add_position(
@@ -115,6 +126,11 @@ def test_risk_engine_polymarket_token_pnl():
         pnl = getattr(result, "pnl", None)
 
     assert pnl is not None
+
+    expected_pnl = (
+        Decimal("0.59") - Decimal("0.31")
+    ) / Decimal("0.31")
+
     assert abs(
-        Decimal(str(pnl)) - Decimal("0.9032258064516129")
+        Decimal(str(pnl)) - expected_pnl
     ) < Decimal("0.00000001")
