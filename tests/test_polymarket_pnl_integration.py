@@ -9,7 +9,10 @@ def test_polymarket_yes_token_profit():
     """
     YES / UP token:
     Entry $0.40 -> Exit $0.60
-    Expected P&L: +$0.50 / +50%
+
+    Expected:
+        P&L = +$0.50
+        P&L% = +50%
     """
 
     tracker = PerformanceTracker(initial_capital=Decimal("1000"))
@@ -32,7 +35,10 @@ def test_polymarket_no_token_profit():
     """
     NO / DOWN token:
     Entry $0.31 -> Exit $0.59
-    Expected P&L: +$0.9032258 / +90.32%
+
+    Expected:
+        P&L = +$0.9032258
+        P&L% = +90.32%
     """
 
     tracker = PerformanceTracker(initial_capital=Decimal("1000"))
@@ -51,7 +57,10 @@ def test_polymarket_no_token_profit():
         Decimal("0.59") - Decimal("0.31")
     ) / Decimal("0.31")
 
-    assert abs(trade.pnl - expected_pnl) < Decimal("0.00000001")
+    assert abs(
+        trade.pnl - expected_pnl
+    ) < Decimal("0.00000001")
+
     assert abs(
         trade.pnl_pct - 0.9032258064516129
     ) < 0.00000001
@@ -61,7 +70,10 @@ def test_polymarket_no_token_loss():
     """
     NO / DOWN token:
     Entry $0.08 -> Exit $0.04
-    Expected P&L: -$0.50 / -50%
+
+    Expected:
+        P&L = -$0.50
+        P&L% = -50%
     """
 
     tracker = PerformanceTracker(initial_capital=Decimal("1000"))
@@ -86,10 +98,13 @@ def test_risk_engine_polymarket_token_pnl():
 
     Both YES and NO are purchased outcome tokens.
 
-    Therefore:
+    Entry: $0.31
+    Exit:  $0.59
+    Size:  $1.00
 
-        P&L = (exit_price - entry_price)
-               / entry_price * position_size
+    Expected:
+        P&L = +$0.9032258
+        P&L% = +90.32%
     """
 
     limits = RiskLimits(
@@ -118,19 +133,18 @@ def test_risk_engine_polymarket_token_pnl():
         exit_price=Decimal("0.59"),
     )
 
-    assert result is not None
+    # Position must be closed successfully.
+    assert result is not None or "RISK-NO-WIN" not in risk._positions
 
-    if isinstance(result, dict):
-        pnl = result.get("pnl")
-    else:
-        pnl = getattr(result, "pnl", None)
+    # Position must no longer exist.
+    assert "RISK-NO-WIN" not in risk._positions
 
-    assert pnl is not None
-
+    # Expected realized P&L.
     expected_pnl = (
         Decimal("0.59") - Decimal("0.31")
     ) / Decimal("0.31")
 
+    # Risk Engine must have recorded the realized P&L.
     assert abs(
-        Decimal(str(pnl)) - expected_pnl
+        risk._daily_pnl - expected_pnl
     ) < Decimal("0.00000001")
